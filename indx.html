@@ -1,0 +1,1646 @@
+import { useState, useEffect } from "react";
+
+const B = {
+  navy: "#0d1b3e",
+  navyMid: "#0f1f47",
+  navyCard: "#1a2d55",
+  navyBorder: "#1e3464",
+  gold: "#f0a500",
+  goldLight: "#ffc233",
+  goldDim: "#b87d00",
+  goldGlow: "rgba(240,165,0,0.12)",
+  offWhite: "#e8eaf0",
+  muted: "#6b7fa8",
+  mutedDark: "#3a4d72",
+  danger: "#e05252",
+  success: "#4caf82",
+};
+
+const USERS_KEY = "halogen_users_v1";
+const TASKS_KEY = "halogen_tasks_v2";
+
+const TRACKING_OPTIONS = [
+  "Halo-trackable",
+  "Halo-untrackable",
+  "Vendor-trackable",
+  "Vendor-untrackable",
+  "Not on tracker",
+  "Personal only",
+  "Halo-trackable/Halo-untrackable",
+];
+
+function getNow() {
+  return new Date().toTimeString().slice(0, 5);
+}
+function getToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+function getWeek(d) {
+  const dt = new Date(d);
+  const s = new Date(dt.getFullYear(), 0, 1);
+  return Math.ceil(((dt - s) / 86400000 + s.getDay() + 1) / 7);
+}
+function getMonth(d) {
+  return new Date(d).toLocaleString("default", { month: "long" });
+}
+function hashPw(s) {
+  return btoa(encodeURIComponent(s + "halogen_salt_77")).slice(0, 32);
+}
+
+// Seed a temporary admin account if none exists
+async function seedAdmin() {
+  try {
+    const r = await window.storage.get(USERS_KEY, true);
+    const users = r ? JSON.parse(r.value) : [];
+    if (!users.find((u) => u.username === "commanderadmin")) {
+      users.unshift({
+        id: "admin_seed",
+        fullName: "Admin User",
+        email: "admin@halogen.com",
+        username: "commanderadmin",
+        passwordHash: hashPw("Halogen@2024"),
+        role: "commander",
+        createdAt: new Date().toISOString(),
+      });
+      await window.storage.set(USERS_KEY, JSON.stringify(users), true);
+    }
+  } catch (e) {}
+}
+
+async function getUsers() {
+  try {
+    const r = await window.storage.get(USERS_KEY, true);
+    return r ? JSON.parse(r.value) : [];
+  } catch {
+    return [];
+  }
+}
+async function saveUsers(u) {
+  try {
+    await window.storage.set(USERS_KEY, JSON.stringify(u), true);
+  } catch {}
+}
+async function getTasks() {
+  try {
+    const r = await window.storage.get(TASKS_KEY, true);
+    return r ? JSON.parse(r.value) : [];
+  } catch {
+    return [];
+  }
+}
+async function saveTasksDb(t) {
+  try {
+    await window.storage.set(TASKS_KEY, JSON.stringify(t), true);
+  } catch {}
+}
+
+// --- Small UI helpers ---
+
+function HalogenLogo({ size }) {
+  const s = size || 60;
+  const rays = 40;
+  const r = s * 0.27;
+  const cx = s / 2;
+  const cy = s * 0.46;
+  const lines = [];
+  for (let i = 0; i < rays; i++) {
+    const a = (-175 + (170 / (rays - 1)) * i) * (Math.PI / 180);
+    const inner = r + s * 0.04;
+    const outer = r + s * 0.35 + (Math.abs(i - rays / 2) < rays * 0.18 ? s * 0.06 : 0);
+    lines.push(
+      <line
+        key={i}
+        x1={cx + inner * Math.cos(a)}
+        y1={cy + inner * Math.sin(a)}
+        x2={cx + outer * Math.cos(a)}
+        y2={cy + outer * Math.sin(a)}
+        stroke="url(#hlg)"
+        strokeWidth={s * 0.009}
+        strokeLinecap="round"
+        opacity={0.92}
+      />
+    );
+  }
+  return (
+    <svg width={s} height={s * 1.12} viewBox={`0 0 ${s} ${s * 1.12}`}>
+      <defs>
+        <radialGradient id="hlg" cx="50%" cy="46%" r="55%">
+          <stop offset="0%" stopColor={B.goldLight} />
+          <stop offset="100%" stopColor={B.gold} />
+        </radialGradient>
+      </defs>
+      {lines}
+      <circle cx={cx} cy={cy} r={r} fill={B.navy} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={B.goldDim} strokeWidth={1.2} />
+    </svg>
+  );
+}
+
+function inputStyle(extra) {
+  return {
+    width: "100%",
+    padding: "11px 14px",
+    background: "rgba(13,27,62,0.7)",
+    border: `1px solid ${B.navyBorder}`,
+    borderRadius: 8,
+    color: B.offWhite,
+    fontSize: 14,
+    fontFamily: "'Barlow', sans-serif",
+    fontWeight: 500,
+    outline: "none",
+    ...extra,
+  };
+}
+
+function Field({ label, hint, children }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {label && (
+        <div style={{ fontSize: 10, color: B.muted, letterSpacing: 2, marginBottom: 5, fontFamily: "'Barlow'" }}>
+          {label}
+        </div>
+      )}
+      {children}
+      {hint && (
+        <div style={{ fontSize: 10, color: B.mutedDark, marginTop: 4, fontFamily: "'Barlow'" }}>
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PwInput({ value, onChange, placeholder, onKeyDown }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder || "••••••••"}
+        onKeyDown={onKeyDown}
+        style={inputStyle({ paddingRight: 44 })}
+      />
+      <button
+        onClick={() => setShow((p) => !p)}
+        style={{
+          position: "absolute",
+          right: 12,
+          top: "50%",
+          transform: "translateY(-50%)",
+          background: "none",
+          border: "none",
+          color: B.muted,
+          cursor: "pointer",
+          fontSize: 15,
+          lineHeight: 1,
+        }}
+      >
+        {show ? "🙈" : "👁️"}
+      </button>
+    </div>
+  );
+}
+
+function GoldButton({ children, onClick, disabled, style: extra }) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      style={{
+        width: "100%",
+        padding: "13px",
+        border: "none",
+        borderRadius: 9,
+        background: disabled ? B.mutedDark : `linear-gradient(135deg, ${B.gold}, ${B.goldDim})`,
+        color: "#0d1b3e",
+        fontSize: 13,
+        fontWeight: 800,
+        letterSpacing: 2,
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontFamily: "'Barlow'",
+        opacity: disabled ? 0.6 : 1,
+        ...extra,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function OutlineButton({ children, onClick, color }) {
+  const c = color || B.gold;
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: "100%",
+        padding: "12px",
+        border: `1px solid ${c}55`,
+        borderRadius: 9,
+        background: `${c}11`,
+        color: c,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: 1.5,
+        cursor: "pointer",
+        fontFamily: "'Barlow'",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function AlertBox({ type, children }) {
+  const colors = {
+    error: [B.danger, "rgba(224,82,82,0.1)"],
+    success: [B.success, "rgba(76,175,130,0.1)"],
+    info: [B.gold, B.goldGlow],
+  };
+  const [c, bg] = colors[type] || colors.error;
+  const icon = type === "error" ? "⚠️" : type === "success" ? "✅" : "ℹ️";
+  return (
+    <div
+      style={{
+        background: bg,
+        border: `1px solid ${c}44`,
+        borderRadius: 8,
+        padding: "10px 14px",
+        marginBottom: 14,
+        fontSize: 12,
+        color: c,
+        fontFamily: "'Barlow'",
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+      }}
+    >
+      <span>{icon}</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function Card({ children, glow, style: extra, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: B.navyCard,
+        border: `1px solid ${B.navyBorder}`,
+        borderRadius: 14,
+        padding: 18,
+        boxShadow: glow ? `0 0 32px rgba(240,165,0,0.2)` : "none",
+        ...extra,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionTitle({ icon, children }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 11,
+        fontWeight: 700,
+        color: B.gold,
+        letterSpacing: 2.5,
+        marginBottom: 16,
+        paddingBottom: 10,
+        borderBottom: `1px solid ${B.navyBorder}`,
+        fontFamily: "'Barlow'",
+      }}
+    >
+      {icon && <span>{icon}</span>}
+      {children}
+    </div>
+  );
+}
+
+function StatusBadge({ status }) {
+  const ok = status === "Completed";
+  return (
+    <span
+      style={{
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: 1.5,
+        padding: "3px 8px",
+        borderRadius: 4,
+        background: ok ? "rgba(76,175,130,0.15)" : "rgba(240,165,0,0.12)",
+        color: ok ? B.success : B.gold,
+        border: `1px solid ${ok ? "rgba(76,175,130,0.3)" : "rgba(240,165,0,0.3)"}`,
+        fontFamily: "'Barlow'",
+      }}
+    >
+      {ok ? "COMPLETED" : "ONGOING"}
+    </span>
+  );
+}
+
+function Toast({ msg }) {
+  if (!msg) return null;
+  return (
+    <div
+      style={{
+        background: "rgba(240,165,0,0.12)",
+        borderTop: `1px solid rgba(240,165,0,0.25)`,
+        padding: "9px 20px",
+        textAlign: "center",
+        fontSize: 12,
+        color: B.goldLight,
+        letterSpacing: 1,
+        fontFamily: "'Barlow'",
+        fontWeight: 600,
+      }}
+    >
+      {msg}
+    </div>
+  );
+}
+
+// ─── AUTH SCREEN ──────────────────────────────────────────────────────────────
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [username, setUsername] = useState("commander");
+  const [fullName, setFullName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [okMsg, setOkMsg] = useState("");
+
+  useEffect(() => {
+    seedAdmin();
+  }, []);
+
+  function reset() {
+    setErr("");
+    setOkMsg("");
+  }
+
+  function handleUsernameInput(val) {
+    const clean = val.replace(/\s/g, "").toLowerCase();
+    if (!clean.startsWith("commander")) {
+      setUsername("commander" + clean.replace(/^commander/, ""));
+    } else {
+      setUsername(clean);
+    }
+  }
+
+  async function doSignup() {
+    reset();
+    if (!fullName.trim()) return setErr("Please enter your full name.");
+    if (!email.includes("@") || !email.includes(".")) return setErr("Please enter a valid email address.");
+    if (!username || username === "commander" || username.length < 11)
+      return setErr('Complete your username — add your name after "commander". E.g. commanderjohn');
+    if (pw.length < 6) return setErr("Password must be at least 6 characters.");
+    if (pw !== pw2) return setErr("Passwords do not match.");
+
+    setLoading(true);
+    const users = await getUsers();
+    if (users.find((u) => u.email.toLowerCase() === email.toLowerCase())) {
+      setLoading(false);
+      return setErr("An account with this email already exists. Please log in.");
+    }
+    if (users.find((u) => u.username === username)) {
+      setLoading(false);
+      return setErr("That username is taken. Try a different one.");
+    }
+    const newUser = {
+      id: Date.now().toString(),
+      fullName: fullName.trim(),
+      email: email.trim().toLowerCase(),
+      username,
+      passwordHash: hashPw(pw),
+      role: "commander",
+      createdAt: new Date().toISOString(),
+    };
+    await saveUsers([...users, newUser]);
+    setLoading(false);
+    setOkMsg("Account created! Logging you in...");
+    setTimeout(() => onAuth(newUser), 1400);
+  }
+
+  async function doLogin() {
+    reset();
+    if (!email.trim()) return setErr("Enter your email.");
+    if (!pw) return setErr("Enter your password.");
+    setLoading(true);
+    const users = await getUsers();
+    const user = users.find(
+      (u) => u.email.toLowerCase() === email.trim().toLowerCase() && u.passwordHash === hashPw(pw)
+    );
+    setTimeout(() => {
+      setLoading(false);
+      if (user) {
+        onAuth(user);
+      } else {
+        setErr("Incorrect email or password. Please try again.");
+      }
+    }, 700);
+  }
+
+  const isLogin = mode === "login";
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: B.navy,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "24px 16px",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800;900&family=Barlow+Condensed:wght@700;800;900&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        input, select { outline: none; }
+        input::placeholder { color: #3a4d72; }
+        @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes glowPulse { 0%,100%{opacity:.2} 50%{opacity:.45} }
+        .au { animation: fadeUp 0.4s ease-out both; }
+        .gp { animation: glowPulse 5s ease-in-out infinite; }
+      `}</style>
+
+      {/* Background glow */}
+      <div
+        className="gp"
+        style={{
+          position: "absolute",
+          width: 700,
+          height: 700,
+          borderRadius: "50%",
+          background: "radial-gradient(circle, rgba(240,165,0,0.07) 0%, transparent 65%)",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%,-50%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div className="au" style={{ width: "100%", maxWidth: 420 }}>
+        {/* Logo */}
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <HalogenLogo size={86} />
+          <div style={{ fontFamily: "'Barlow Condensed'", fontWeight: 900, fontSize: 28, color: "#fff", letterSpacing: 7, marginTop: 4 }}>
+            HALOGEN
+          </div>
+          <div style={{ fontFamily: "'Barlow Condensed'", fontWeight: 700, fontSize: 13, color: B.gold, letterSpacing: 8 }}>
+            GROUP
+          </div>
+          <div style={{ fontSize: 9, color: B.mutedDark, letterSpacing: 4, marginTop: 8, fontFamily: "'Barlow'" }}>
+            JOURNEY MANAGEMENT SYSTEM
+          </div>
+        </div>
+
+        {/* Temp credentials banner */}
+        <div
+          style={{
+            background: "rgba(240,165,0,0.08)",
+            border: `1px solid rgba(240,165,0,0.3)`,
+            borderRadius: 10,
+            padding: "12px 16px",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ fontSize: 10, color: B.gold, letterSpacing: 2, marginBottom: 6, fontFamily: "'Barlow'", fontWeight: 700 }}>
+            🔑 TEMPORARY LOGIN CREDENTIALS
+          </div>
+          <div style={{ fontSize: 12, color: B.offWhite, fontFamily: "'Barlow'", lineHeight: 1.8 }}>
+            <div>Email: <span style={{ color: B.goldLight, fontWeight: 600 }}>admin@halogen.com</span></div>
+            <div>Password: <span style={{ color: B.goldLight, fontWeight: 600 }}>Halogen@2024</span></div>
+          </div>
+          <div style={{ fontSize: 10, color: B.mutedDark, marginTop: 6, fontFamily: "'Barlow'" }}>
+            Log in with these, then Sign Up to create your own account.
+          </div>
+        </div>
+
+        {/* Card */}
+        <div
+          style={{
+            background: "#0f1f47",
+            border: `1px solid ${B.navyBorder}`,
+            borderRadius: 20,
+            padding: "28px 24px",
+            position: "relative",
+            boxShadow: "0 40px 100px rgba(0,0,0,0.5)",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: "15%",
+              right: "15%",
+              height: 2,
+              background: `linear-gradient(90deg, transparent, ${B.gold}, transparent)`,
+              borderRadius: "0 0 4px 4px",
+            }}
+          />
+
+          {/* Tabs */}
+          <div style={{ display: "flex", marginBottom: 22, background: "rgba(0,0,0,0.2)", borderRadius: 10, padding: 3 }}>
+            {["login", "signup"].map((m) => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); reset(); }}
+                style={{
+                  flex: 1,
+                  padding: "10px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: mode === m ? "rgba(240,165,0,0.13)" : "transparent",
+                  color: mode === m ? B.gold : B.mutedDark,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: 2,
+                  cursor: "pointer",
+                  fontFamily: "'Barlow'",
+                  borderBottom: mode === m ? `1px solid rgba(240,165,0,0.35)` : "1px solid transparent",
+                  transition: "all 0.2s",
+                }}
+              >
+                {m === "login" ? "🔐 LOGIN" : "✍️ SIGN UP"}
+              </button>
+            ))}
+          </div>
+
+          {err && <AlertBox type="error">{err}</AlertBox>}
+          {okMsg && <AlertBox type="success">{okMsg}</AlertBox>}
+
+          {/* SIGN UP */}
+          {!isLogin && (
+            <div>
+              <Field label="FULL NAME">
+                <input
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="e.g. John Okafor"
+                  style={inputStyle()}
+                />
+              </Field>
+              <Field label="EMAIL ADDRESS">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  style={inputStyle()}
+                />
+              </Field>
+              <Field label="USERNAME" hint={'Must start with "commander" — e.g. commanderjohn'}>
+                <input
+                  value={username}
+                  onChange={(e) => handleUsernameInput(e.target.value)}
+                  placeholder="commanderyourname"
+                  autoCapitalize="none"
+                  style={inputStyle()}
+                />
+              </Field>
+              <Field label="CREATE PASSWORD" hint="Minimum 6 characters">
+                <PwInput value={pw} onChange={(e) => setPw(e.target.value)} />
+              </Field>
+              <Field label="CONFIRM PASSWORD">
+                <PwInput
+                  value={pw2}
+                  onChange={(e) => setPw2(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && doSignup()}
+                />
+              </Field>
+              <div style={{ marginBottom: 16 }}>
+                <div
+                  style={{
+                    background: "rgba(255,255,255,0.025)",
+                    border: `1px solid ${B.navyBorder}`,
+                    borderRadius: 8,
+                    padding: "10px 13px",
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                  }}
+                >
+                  <span style={{ fontSize: 15 }}>ℹ️</span>
+                  <div style={{ fontSize: 11, color: B.mutedDark, fontFamily: "'Barlow'", lineHeight: 1.65 }}>
+                    <span style={{ color: B.muted, fontWeight: 600 }}>Google Sign-In</span> requires a hosted server with an OAuth redirect URL. Email signup works fully right now.
+                  </div>
+                </div>
+              </div>
+              <GoldButton onClick={doSignup} disabled={loading}>
+                {loading ? "CREATING ACCOUNT..." : "CREATE MY ACCOUNT"}
+              </GoldButton>
+              <div style={{ textAlign: "center", marginTop: 14, fontSize: 11, color: B.mutedDark, fontFamily: "'Barlow'" }}>
+                Already have an account?{" "}
+                <span onClick={() => { setMode("login"); reset(); }} style={{ color: B.gold, cursor: "pointer", fontWeight: 700 }}>
+                  LOG IN HERE
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* LOGIN */}
+          {isLogin && (
+            <div>
+              <Field label="EMAIL ADDRESS">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  style={inputStyle()}
+                  onKeyDown={(e) => e.key === "Enter" && doLogin()}
+                />
+              </Field>
+              <Field label="PASSWORD">
+                <PwInput
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && doLogin()}
+                />
+              </Field>
+              <div style={{ marginBottom: 20 }} />
+              <GoldButton onClick={doLogin} disabled={loading}>
+                {loading ? "AUTHENTICATING..." : "ACCESS SYSTEM"}
+              </GoldButton>
+              <div style={{ textAlign: "center", marginTop: 14, fontSize: 11, color: B.mutedDark, fontFamily: "'Barlow'" }}>
+                No account yet?{" "}
+                <span onClick={() => { setMode("signup"); reset(); }} style={{ color: B.gold, cursor: "pointer", fontWeight: 700 }}>
+                  SIGN UP
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ textAlign: "center", marginTop: 16, fontSize: 10, color: B.mutedDark, fontFamily: "'Barlow'", letterSpacing: 1 }}>
+          Halogen Group · Confidential Internal System
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── COMMANDER APP ────────────────────────────────────────────────────────────
+function CommanderApp({ user, onLogout }) {
+  const [screen, setScreen] = useState("home");
+  const [tasks, setTasks] = useState([]);
+  const [activeTask, setActiveTask] = useState(null);
+  const [toast, setToast] = useState("");
+  const [legPhase, setLegPhase] = useState("depart");
+  const [depInput, setDepInput] = useState("");
+  const [arrInput, setArrInput] = useState("");
+  const [form, setForm] = useState({
+    date: getToday(),
+    region: "",
+    client: "",
+    vehicleNumber: "",
+    trackingStatus: "",
+    timeOfPickup: "",
+    pilotDriver: "",
+  });
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  async function loadAll() {
+    const t = await getTasks();
+    setTasks(t);
+    const mine = t.find((x) => x.commanderUsername === user.username && x.status === "Ongoing");
+    if (mine) setActiveTask(mine);
+  }
+
+  async function persist(updated) {
+    setTasks(updated);
+    await saveTasksDb(updated);
+  }
+
+  function flash(m) {
+    setToast(m);
+    setTimeout(() => setToast(""), 2600);
+  }
+
+  const live = activeTask ? tasks.find((t) => t.id === activeTask.id) || activeTask : null;
+
+  async function startTask() {
+    if (!form.region || !form.client || !form.vehicleNumber) {
+      flash("Please fill in Region, Client and Vehicle Number.");
+      return;
+    }
+    const task = {
+      id: Date.now().toString(),
+      ...form,
+      commanderName: user.fullName,
+      commanderUsername: user.username,
+      commanderEmail: user.email,
+      week: getWeek(form.date),
+      month: getMonth(form.date),
+      legs: [],
+      finalDestination: "",
+      completionTime: "",
+      status: "Ongoing",
+      createdAt: new Date().toISOString(),
+    };
+    await persist([task, ...tasks]);
+    setActiveTask(task);
+    setLegPhase("depart");
+    setDepInput("");
+    setArrInput("");
+    setScreen("activeTask");
+    flash("Task initiated. Log your first departure.");
+  }
+
+  async function doDepart() {
+    if (!depInput.trim()) { flash("Enter departure point."); return; }
+    if (!live) return;
+    const time = getNow();
+    const legs = [...live.legs, { departurePoint: depInput.trim(), timeDeparted: time, arrivalPoint: "", timeArrived: "" }];
+    const updated = { ...live, legs };
+    await persist(tasks.map((t) => (t.id === updated.id ? updated : t)));
+    setActiveTask(updated);
+    setDepInput("");
+    setLegPhase("arrive");
+    flash(`↑ Departed from ${depInput.trim()} at ${time}`);
+  }
+
+  async function doArrive() {
+    if (!arrInput.trim()) { flash("Enter arrival point."); return; }
+    if (!live) return;
+    const time = getNow();
+    const legs = [...live.legs];
+    const li = legs.length - 1;
+    if (li >= 0) {
+      legs[li] = { ...legs[li], arrivalPoint: arrInput.trim(), timeArrived: time };
+    } else {
+      legs.push({ departurePoint: "", timeDeparted: "", arrivalPoint: arrInput.trim(), timeArrived: time });
+    }
+    const updated = { ...live, legs };
+    await persist(tasks.map((t) => (t.id === updated.id ? updated : t)));
+    setActiveTask(updated);
+    setArrInput("");
+    setLegPhase("depart");
+    flash(`↓ Arrived at ${arrInput.trim()} at ${time}`);
+  }
+
+  async function completeTask() {
+    if (!live) return;
+    const time = getNow();
+    const last = live.legs[live.legs.length - 1];
+    const updated = { ...live, finalDestination: last?.arrivalPoint || "—", completionTime: time, status: "Completed" };
+    await persist(tasks.map((t) => (t.id === updated.id ? updated : t)));
+    setActiveTask(updated);
+    flash("✅ Task marked COMPLETED.");
+  }
+
+  const myTasks = tasks.filter((t) => t.commanderUsername === user.username);
+
+  const TABS = [
+    { id: "home", label: "HOME", icon: "🏠" },
+    { id: "newTask", label: "NEW TASK", icon: "➕" },
+    { id: "activeTask", label: "ACTIVE", icon: "📡" },
+    { id: "history", label: "HISTORY", icon: "📋" },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh", background: B.navy, fontFamily: "'Barlow', sans-serif", color: B.offWhite }}>
+      {/* Header */}
+      <div
+        style={{
+          background: "#0f1f47",
+          borderBottom: `1px solid ${B.navyBorder}`,
+          padding: "10px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          position: "sticky",
+          top: 0,
+          zIndex: 50,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <HalogenLogo size={38} />
+          <div>
+            <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 16, fontWeight: 900, color: "#fff", letterSpacing: 4 }}>
+              HALOGEN
+            </div>
+            <div style={{ fontSize: 9, color: B.gold, letterSpacing: 4 }}>COMMANDER APP</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: B.offWhite }}>{user.fullName}</div>
+            <div style={{ fontSize: 9, color: B.muted }}>{user.username}</div>
+          </div>
+          <button
+            onClick={onLogout}
+            style={{
+              background: "rgba(224,82,82,0.12)",
+              border: "1px solid rgba(224,82,82,0.2)",
+              borderRadius: 7,
+              padding: "5px 11px",
+              color: B.danger,
+              fontSize: 10,
+              cursor: "pointer",
+              letterSpacing: 1,
+              fontFamily: "'Barlow'",
+              fontWeight: 700,
+            }}
+          >
+            LOGOUT
+          </button>
+        </div>
+      </div>
+
+      <Toast msg={toast} />
+
+      {/* Nav Tabs */}
+      <div style={{ display: "flex", background: "rgba(0,0,0,0.2)", borderBottom: `1px solid ${B.navyBorder}` }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setScreen(tab.id)}
+            style={{
+              flex: 1,
+              padding: "11px 4px",
+              background: screen === tab.id ? B.goldGlow : "transparent",
+              border: "none",
+              borderBottom: `2px solid ${screen === tab.id ? B.gold : "transparent"}`,
+              color: screen === tab.id ? B.gold : B.mutedDark,
+              fontSize: 9,
+              letterSpacing: 1.5,
+              cursor: "pointer",
+              fontFamily: "'Barlow'",
+              fontWeight: 700,
+              transition: "all 0.2s",
+            }}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: "20px 16px", maxWidth: 480, margin: "0 auto", paddingBottom: 44 }}>
+
+        {/* HOME */}
+        {screen === "home" && (
+          <div>
+            <div style={{ textAlign: "center", padding: "16px 0 24px" }}>
+              <HalogenLogo size={90} />
+              <div style={{ fontFamily: "'Barlow Condensed'", fontSize: 24, fontWeight: 900, color: "#fff", letterSpacing: 5, marginTop: 4 }}>
+                HALOGEN GROUP
+              </div>
+              <div style={{ fontSize: 11, color: B.gold, letterSpacing: 4 }}>JOURNEY MANAGEMENT</div>
+              <div
+                style={{
+                  marginTop: 10,
+                  display: "inline-block",
+                  background: B.goldGlow,
+                  border: "1px solid rgba(240,165,0,0.25)",
+                  borderRadius: 20,
+                  padding: "4px 18px",
+                }}
+              >
+                <span style={{ fontSize: 12, color: B.goldLight }}>Welcome, {user.fullName}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[
+                { label: "New Task", icon: "🚀", action: () => setScreen("newTask"), gold: true },
+                { label: "Active Task", icon: "📡", action: () => setScreen("activeTask") },
+                { label: "My History", icon: "📋", action: () => setScreen("history") },
+                { label: "My Operations", icon: "📊", stat: myTasks.length },
+              ].map((item, i) => (
+                <Card
+                  key={i}
+                  onClick={item.action}
+                  glow={item.gold}
+                  style={{
+                    cursor: item.action ? "pointer" : "default",
+                    border: item.gold ? "1px solid rgba(240,165,0,0.4)" : `1px solid ${B.navyBorder}`,
+                    textAlign: "center",
+                    padding: "22px 12px",
+                    background: item.gold ? "linear-gradient(160deg, rgba(240,165,0,0.09), #1a2d55)" : B.navyCard,
+                  }}
+                >
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>{item.icon}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1, color: item.gold ? B.gold : B.muted }}>
+                    {item.stat !== undefined ? item.stat : item.label}
+                  </div>
+                  {item.stat !== undefined && (
+                    <div style={{ fontSize: 10, color: B.mutedDark, marginTop: 2 }}>OPERATIONS</div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* NEW TASK */}
+        {screen === "newTask" && (
+          <div>
+            <SectionTitle icon="📋">TASK BRIEFING FORM</SectionTitle>
+            <Card>
+              <Field label="DATE OF TASK">
+                <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} style={inputStyle()} />
+              </Field>
+              <Field label="REGION *">
+                <input value={form.region} onChange={(e) => setForm((f) => ({ ...f, region: e.target.value }))} placeholder="e.g. Lagos, Abuja, Port Harcourt..." style={inputStyle()} />
+              </Field>
+              <Field label="CLIENT / TASK *">
+                <input value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} placeholder="Client name or task description..." style={inputStyle()} />
+              </Field>
+              <Field label="VEHICLE NUMBER *">
+                <input value={form.vehicleNumber} onChange={(e) => setForm((f) => ({ ...f, vehicleNumber: e.target.value }))} placeholder="e.g. LAG-234-XY" style={inputStyle()} />
+              </Field>
+              <Field label="TRACKING STATUS">
+                <select value={form.trackingStatus} onChange={(e) => setForm((f) => ({ ...f, trackingStatus: e.target.value }))} style={inputStyle()}>
+                  <option value="">Select tracking status...</option>
+                  {TRACKING_OPTIONS.map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="TIME OF PICKUP">
+                <input type="time" value={form.timeOfPickup} onChange={(e) => setForm((f) => ({ ...f, timeOfPickup: e.target.value }))} style={inputStyle()} />
+              </Field>
+              <Field label="COMMANDER">
+                <div style={{ padding: "11px 14px", background: "rgba(240,165,0,0.05)", border: "1px solid rgba(240,165,0,0.2)", borderRadius: 8, fontSize: 14, color: B.gold, fontWeight: 600 }}>
+                  {user.fullName}
+                </div>
+              </Field>
+              <Field label="PILOT / DRIVER">
+                <input value={form.pilotDriver} onChange={(e) => setForm((f) => ({ ...f, pilotDriver: e.target.value }))} placeholder="Driver's full name..." style={inputStyle()} />
+              </Field>
+              <div style={{ marginTop: 4 }}>
+                <GoldButton onClick={startTask}>🚀 INITIATE TASK</GoldButton>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ACTIVE TASK */}
+        {screen === "activeTask" && (
+          <div>
+            <SectionTitle icon="📡">SITREP — LIVE TASK</SectionTitle>
+
+            {!live ? (
+              <Card style={{ textAlign: "center", padding: "48px 20px" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>📡</div>
+                <div style={{ color: B.muted }}>No active task. Start a new task first.</div>
+              </Card>
+            ) : (
+              <div>
+                {/* Task summary card */}
+                <Card glow style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>{live.client}</div>
+                      <div style={{ fontSize: 11, color: B.muted, marginTop: 2 }}>{live.region} · {live.date}</div>
+                    </div>
+                    <StatusBadge status={live.status} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {[
+                      ["Vehicle", live.vehicleNumber],
+                      ["Pickup", live.timeOfPickup || "—"],
+                      ["Driver", live.pilotDriver || "—"],
+                      ["Tracking", live.trackingStatus ? live.trackingStatus.split("-").slice(0, 2).join("-") : "—"],
+                    ].map(([k, v]) => (
+                      <div key={k} style={{ background: "rgba(0,0,0,0.2)", borderRadius: 7, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 9, color: B.mutedDark, letterSpacing: 1.5, marginBottom: 2 }}>{k}</div>
+                        <div style={{ fontSize: 12, color: B.offWhite, fontWeight: 500 }}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                {/* Movement log */}
+                {live.legs.length > 0 && (
+                  <Card style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 10, color: B.muted, letterSpacing: 2, marginBottom: 12 }}>
+                      MOVEMENT LOG — {live.legs.length} LEG{live.legs.length !== 1 ? "S" : ""}
+                    </div>
+                    {live.legs.map((leg, i) => (
+                      <div key={i} style={{ position: "relative", paddingLeft: 18, marginBottom: 12 }}>
+                        <div style={{ position: "absolute", left: 0, top: 0, bottom: -12, width: 2, background: i === live.legs.length - 1 ? B.gold : B.navyBorder }} />
+                        <div style={{ position: "absolute", left: -3, top: 6, width: 8, height: 8, borderRadius: "50%", background: i === live.legs.length - 1 ? B.gold : B.navyBorder }} />
+                        {leg.departurePoint && (
+                          <div style={{ fontSize: 12, marginBottom: 3 }}>
+                            <span style={{ color: B.danger }}>↑ </span>
+                            <span style={{ color: B.offWhite }}>{leg.departurePoint}</span>
+                            {leg.timeDeparted && <span style={{ color: B.mutedDark, marginLeft: 8, fontSize: 11 }}>{leg.timeDeparted}</span>}
+                          </div>
+                        )}
+                        {leg.arrivalPoint && (
+                          <div style={{ fontSize: 12 }}>
+                            <span style={{ color: B.success }}>↓ </span>
+                            <span style={{ color: B.offWhite }}>{leg.arrivalPoint}</span>
+                            {leg.timeArrived && <span style={{ color: B.mutedDark, marginLeft: 8, fontSize: 11 }}>{leg.timeArrived}</span>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </Card>
+                )}
+
+                {/* Smart SITREP form */}
+                {live.status === "Ongoing" && (
+                  <div>
+                    {legPhase === "depart" && (
+                      <Card style={{ marginBottom: 12, border: "1px solid rgba(224,82,82,0.3)", background: "rgba(224,82,82,0.04)" }}>
+                        <div style={{ fontSize: 11, color: B.danger, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>
+                          ↑ DEPARTING FROM
+                        </div>
+                        <input
+                          value={depInput}
+                          onChange={(e) => setDepInput(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && doDepart()}
+                          placeholder="Enter departure location..."
+                          style={inputStyle({ marginBottom: 12 })}
+                          autoFocus
+                        />
+                        <GoldButton onClick={doDepart} style={{ background: `linear-gradient(135deg, ${B.danger}, #c04040)`, color: "#fff" }}>
+                          ↑ LOG DEPARTURE · {getNow()}
+                        </GoldButton>
+                      </Card>
+                    )}
+
+                    {legPhase === "arrive" && (
+                      <Card style={{ marginBottom: 12, border: "1px solid rgba(76,175,130,0.3)", background: "rgba(76,175,130,0.04)" }}>
+                        <div style={{ fontSize: 11, color: B.success, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>
+                          ↓ ARRIVING AT
+                        </div>
+                        <input
+                          value={arrInput}
+                          onChange={(e) => setArrInput(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && doArrive()}
+                          placeholder="Enter arrival location..."
+                          style={inputStyle({ marginBottom: 12 })}
+                          autoFocus
+                        />
+                        <GoldButton onClick={doArrive} style={{ background: `linear-gradient(135deg, ${B.success}, #3a8f65)`, color: "#fff" }}>
+                          ↓ LOG ARRIVAL · {getNow()}
+                        </GoldButton>
+                      </Card>
+                    )}
+
+                    <OutlineButton onClick={completeTask} color={B.gold}>
+                      ✅ MARK TASK COMPLETE
+                    </OutlineButton>
+                  </div>
+                )}
+
+                {live.status === "Completed" && (
+                  <Card style={{ textAlign: "center", padding: 24, border: "1px solid rgba(76,175,130,0.3)" }}>
+                    <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
+                    <div style={{ color: B.success, fontWeight: 700, fontSize: 16, letterSpacing: 1 }}>TASK COMPLETED</div>
+                    <div style={{ color: B.muted, fontSize: 12, marginTop: 6 }}>
+                      Final destination: <strong style={{ color: B.offWhite }}>{live.finalDestination}</strong>
+                    </div>
+                    <div style={{ color: B.muted, fontSize: 12, marginTop: 4 }}>
+                      Completed at: <strong style={{ color: B.offWhite }}>{live.completionTime}</strong>
+                    </div>
+                  </Card>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HISTORY */}
+        {screen === "history" && (
+          <div>
+            <SectionTitle icon="📋">MY TASK HISTORY</SectionTitle>
+            {myTasks.length === 0 ? (
+              <Card style={{ textAlign: "center", padding: "48px 20px" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
+                <div style={{ color: B.muted }}>No tasks recorded yet.</div>
+              </Card>
+            ) : (
+              myTasks.map((task) => (
+                <Card key={task.id} style={{ marginBottom: 10, borderLeft: `3px solid ${task.status === "Completed" ? B.success : B.gold}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{task.client}</div>
+                    <StatusBadge status={task.status} />
+                  </div>
+                  <div style={{ fontSize: 11, color: B.muted, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <span>📅 {task.date}</span>
+                    <span>🚗 {task.vehicleNumber}</span>
+                    <span>📍 {task.region}</span>
+                    <span>🔗 {task.legs.length} legs</span>
+                  </div>
+                </Card>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ROOT ─────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user, setUser] = useState(null);
+  return user ? (
+    <CommanderApp user={user} onLogout={() => setUser(null)} />
+  ) : (
+    <AuthScreen onAuth={setUser} />
+  );
+}
+  const [activeTask, setActiveTask] = useState(null);
+  const [form, setForm] = useState({
+    date: getToday(),
+    region: "",
+    client: "",
+    vehicleNumber: "",
+    trackingStatus: "",
+    timeOfPickup: "",
+    commanderName: "",
+    pilotDriver: "",
+  });
+  const [legForm, setLegForm] = useState({ departurePoint: "", arrivalPoint: "" });
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
+  async function loadTasks() {
+    try {
+      const result = await window.storage.get(STORAGE_KEY, true);
+      if (result) setTasks(JSON.parse(result.value));
+    } catch {}
+  }
+
+  async function saveTasks(updated) {
+    setTasks(updated);
+    await window.storage.set(STORAGE_KEY, JSON.stringify(updated), true);
+  }
+
+  function flash(text) {
+    setMsg(text);
+    setTimeout(() => setMsg(""), 2500);
+  }
+
+  async function handleStartTask() {
+    if (!form.commanderName || !form.client || !form.vehicleNumber || !form.region) {
+      flash("Please fill in all required fields.");
+      return;
+    }
+    const task = {
+      id: Date.now().toString(),
+      ...form,
+      week: getWeek(form.date),
+      month: getMonth(form.date),
+      legs: [],
+      finalDestination: "",
+      completionTime: "",
+      status: "Ongoing",
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [task, ...tasks];
+    await saveTasks(updated);
+    setActiveTask(task);
+    setScreen("activeTask");
+    flash("Task started!");
+  }
+
+  async function handleAddLeg(type) {
+    if (!activeTask) return;
+    const time = getNow();
+    let updatedLegs = [...activeTask.legs];
+
+    if (type === "depart") {
+      if (!legForm.departurePoint) { flash("Enter departure point."); return; }
+      updatedLegs.push({ departurePoint: legForm.departurePoint, timeDeparted: time, arrivalPoint: "", timeArrived: "" });
+      setLegForm(f => ({ ...f, departurePoint: "" }));
+      flash(`Departed at ${time}`);
+    } else {
+      if (!legForm.arrivalPoint) { flash("Enter arrival point."); return; }
+      const lastLeg = updatedLegs[updatedLegs.length - 1];
+      if (lastLeg && !lastLeg.timeArrived) {
+        updatedLegs[updatedLegs.length - 1] = { ...lastLeg, arrivalPoint: legForm.arrivalPoint, timeArrived: time };
+      } else {
+        updatedLegs.push({ departurePoint: "", timeDeparted: "", arrivalPoint: legForm.arrivalPoint, timeArrived: time });
+      }
+      setLegForm(f => ({ ...f, arrivalPoint: "" }));
+      flash(`Arrived at ${time}`);
+    }
+
+    const updated = { ...activeTask, legs: updatedLegs };
+    setActiveTask(updated);
+    const all = tasks.map(t => t.id === updated.id ? updated : t);
+    await saveTasks(all);
+  }
+
+  async function handleComplete() {
+    if (!activeTask) return;
+    const time = getNow();
+    const lastLeg = activeTask.legs[activeTask.legs.length - 1];
+    const finalDest = lastLeg?.arrivalPoint || "—";
+    const updated = { ...activeTask, finalDestination: finalDest, completionTime: time, status: "Completed" };
+    setActiveTask(updated);
+    const all = tasks.map(t => t.id === updated.id ? updated : t);
+    await saveTasks(all);
+    flash("Task marked as Completed!");
+  }
+
+  const myTasks = tasks.filter(t => t.commanderName === form.commanderName);
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(160deg, #0a0f1e 0%, #0d1a2e 60%, #0a1520 100%)",
+      fontFamily: "'Rajdhani', 'Oswald', sans-serif",
+      color: "#e2e8f0",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #0a0f1e; }
+        ::-webkit-scrollbar-thumb { background: #f59e0b; border-radius: 2px; }
+        input, select { outline: none; }
+        input::placeholder { color: #4a5568; }
+      `}</style>
+
+      {/* Header */}
+      <div style={{
+        background: "rgba(245,158,11,0.08)",
+        borderBottom: "1px solid rgba(245,158,11,0.25)",
+        padding: "14px 20px",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 8,
+            background: "linear-gradient(135deg, #f59e0b, #d97706)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 18, fontWeight: 700, color: "#0a0f1e",
+          }}>H</div>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 2, color: "#f59e0b" }}>HALOGEN</div>
+            <div style={{ fontSize: 10, color: "#718096", letterSpacing: 3 }}>COMMANDER FIELD APP</div>
+          </div>
+        </div>
+        <div style={{
+          fontSize: 11, color: "#718096", fontFamily: "'Share Tech Mono'",
+          background: "rgba(0,0,0,0.3)", padding: "4px 8px", borderRadius: 4,
+          border: "1px solid #1a2744",
+        }}>
+          {new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </div>
+      </div>
+
+      {/* Flash message */}
+      {msg && (
+        <div style={{
+          background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b",
+          padding: "10px 20px", textAlign: "center", fontSize: 13, color: "#fcd34d",
+          letterSpacing: 1,
+        }}>{msg}</div>
+      )}
+
+      {/* Nav */}
+      <div style={{
+        display: "flex", borderBottom: "1px solid #1a2744",
+        background: "rgba(0,0,0,0.2)",
+      }}>
+        {["home", "newTask", "activeTask", "history"].map(s => (
+          <button key={s} onClick={() => setScreen(s)} style={{
+            flex: 1, padding: "12px 4px", background: screen === s ? "rgba(245,158,11,0.12)" : "transparent",
+            border: "none", borderBottom: screen === s ? "2px solid #f59e0b" : "2px solid transparent",
+            color: screen === s ? "#f59e0b" : "#4a5568", fontSize: 10,
+            letterSpacing: 1.5, cursor: "pointer", fontFamily: "'Rajdhani'", fontWeight: 600,
+            transition: "all 0.2s",
+          }}>
+            {s === "home" ? "HOME" : s === "newTask" ? "NEW TASK" : s === "activeTask" ? "ACTIVE" : "HISTORY"}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: "20px 16px", maxWidth: 480, margin: "0 auto" }}>
+
+        {/* HOME */}
+        {screen === "home" && (
+          <div>
+            <div style={{ textAlign: "center", padding: "30px 0 20px" }}>
+              <div style={{
+                width: 80, height: 80, borderRadius: "50%", margin: "0 auto 16px",
+                background: "linear-gradient(135deg, rgba(245,158,11,0.2), rgba(245,158,11,0.05))",
+                border: "2px solid rgba(245,158,11,0.4)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 32,
+              }}>🛡️</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: 2, color: "#f59e0b" }}>JOURNEY MANAGEMENT</div>
+              <div style={{ fontSize: 13, color: "#4a5568", marginTop: 6, letterSpacing: 1 }}>Halogen Security · Field Operations</div>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <div style={{
+                background: "rgba(255,255,255,0.03)", border: "1px solid #1a2744",
+                borderRadius: 12, padding: "16px",
+              }}>
+                <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: 2, marginBottom: 12 }}>QUICK COMMANDER ID</div>
+                <input
+                  value={form.commanderName}
+                  onChange={e => setForm(f => ({ ...f, commanderName: e.target.value }))}
+                  placeholder="Enter your name to get started..."
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 16 }}>
+              {[
+                { label: "Start New Task", icon: "🚀", action: () => setScreen("newTask"), highlight: true },
+                { label: "Active Task", icon: "📡", action: () => setScreen("activeTask") },
+                { label: "Task History", icon: "📋", action: () => setScreen("history") },
+                { label: "Total Ops", icon: "📊", action: null, stat: tasks.length },
+              ].map((item, i) => (
+                <div key={i} onClick={item.action} style={{
+                  background: item.highlight ? "linear-gradient(135deg, rgba(245,158,11,0.2), rgba(245,158,11,0.05))" : "rgba(255,255,255,0.03)",
+                  border: item.highlight ? "1px solid rgba(245,158,11,0.5)" : "1px solid #1a2744",
+                  borderRadius: 12, padding: "20px 16px", cursor: item.action ? "pointer" : "default",
+                  textAlign: "center", transition: "all 0.2s",
+                }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>{item.icon}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 1, color: item.highlight ? "#f59e0b" : "#a0aec0" }}>
+                    {item.stat !== undefined ? item.stat : item.label}
+                  </div>
+                  {item.stat !== undefined && <div style={{ fontSize: 10, color: "#4a5568", marginTop: 2 }}>{item.label}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* NEW TASK */}
+        {screen === "newTask" && (
+          <div>
+            <SectionTitle>📋 NEW TASK BRIEFING</SectionTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <FieldGroup label="DATE OF TASK">
+                <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="REGION *">
+                <input value={form.region} onChange={e => setForm(f => ({ ...f, region: e.target.value }))} placeholder="e.g. Lagos, Abuja, Port Harcourt..." style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="CLIENT / TASK *">
+                <input value={form.client} onChange={e => setForm(f => ({ ...f, client: e.target.value }))} placeholder="Client name or task description..." style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="VEHICLE NUMBER *">
+                <input value={form.vehicleNumber} onChange={e => setForm(f => ({ ...f, vehicleNumber: e.target.value }))} placeholder="e.g. LAG-234-XY" style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="TRACKING STATUS">
+                <select value={form.trackingStatus} onChange={e => setForm(f => ({ ...f, trackingStatus: e.target.value }))} style={inputStyle}>
+                  <option value="">Select tracking status...</option>
+                  {TRACKING_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </FieldGroup>
+              <FieldGroup label="TIME OF PICKUP">
+                <input type="time" value={form.timeOfPickup} onChange={e => setForm(f => ({ ...f, timeOfPickup: e.target.value }))} style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="COMMANDER NAME *">
+                <input value={form.commanderName} onChange={e => setForm(f => ({ ...f, commanderName: e.target.value }))} placeholder="Commander's full name..." style={inputStyle} />
+              </FieldGroup>
+              <FieldGroup label="PILOT / DRIVER">
+                <input value={form.pilotDriver} onChange={e => setForm(f => ({ ...f, pilotDriver: e.target.value }))} placeholder="Driver's name..." style={inputStyle} />
+              </FieldGroup>
+
+              <button onClick={handleStartTask} style={primaryBtn}>
+                🚀 INITIATE TASK
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ACTIVE TASK */}
+        {screen === "activeTask" && (
+          <div>
+            <SectionTitle>📡 ACTIVE TASK — SITREP</SectionTitle>
+            {!activeTask ? (
+              <div style={{ textAlign: "center", padding: "40px 0", color: "#4a5568" }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>📡</div>
+                <div style={{ fontSize: 14 }}>No active task. Start a new task first.</div>
+              </div>
+            ) : (
+              <div>
+                {/* Task summary card */}
+                <div style={{
+                  background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)",
+                  borderRadius: 12, padding: 16, marginBottom: 20,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "#f59e0b", letterSpacing: 1 }}>{activeTask.client}</div>
+                    <StatusBadge status={activeTask.status} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {[
+                      ["Commander", activeTask.commanderName],
+                      ["Vehicle", activeTask.vehicleNumber],
+                      ["Region", activeTask.region],
+                      ["Pickup", activeTask.timeOfPickup || "—"],
+                    ].map(([k, v]) => (
+                      <div key={k}>
+                        <div style={{ fontSize: 9, color: "#4a5568", letterSpacing: 1.5 }}>{k.toUpperCase()}</div>
+                        <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Movement log */}
+                {activeTask.legs.length > 0 && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: 2, marginBottom: 10 }}>MOVEMENT LOG</div>
+                    {activeTask.legs.map((leg, i) => (
+                      <div key={i} style={{
+                        borderLeft: "2px solid rgba(245,158,11,0.3)",
+                        paddingLeft: 14, marginBottom: 14, position: "relative",
+                      }}>
+                        <div style={{
+                          width: 8, height: 8, borderRadius: "50%",
+                          background: "#f59e0b", position: "absolute", left: -5, top: 4,
+                        }} />
+                        {leg.departurePoint && (
+                          <div style={{ fontSize: 12, color: "#a0aec0", marginBottom: 2 }}>
+                            <span style={{ color: "#ef4444" }}>↑ DEP</span> {leg.departurePoint}
+                            {leg.timeDeparted && <span style={{ color: "#4a5568", fontFamily: "'Share Tech Mono'", marginLeft: 6 }}>{leg.timeDeparted}</span>}
+                          </div>
+                        )}
+                        {leg.arrivalPoint && (
+                          <div style={{ fontSize: 12, color: "#a0aec0" }}>
+                            <span style={{ color: "#22c55e" }}>↓ ARR</span> {leg.arrivalPoint}
+                            {leg.timeArrived && <span style={{ color: "#4a5568", fontFamily: "'Share Tech Mono'", marginLeft: 6 }}>{leg.timeArrived}</span>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* SITREP buttons */}
+                {activeTask.status === "Ongoing" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: 2, marginBottom: 4 }}>UPDATE SITUATION REPORT</div>
+
+                    <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 10, padding: 14 }}>
+                      <div style={{ fontSize: 11, color: "#ef4444", letterSpacing: 1.5, marginBottom: 8 }}>DEPARTING FROM</div>
+                      <input
+                        value={legForm.departurePoint}
+                        onChange={e => setLegForm(f => ({ ...f, departurePoint: e.target.value }))}
+                        placeholder="Current departure location..."
+                        style={inputStyle}
+                      />
+                      <button onClick={() => handleAddLeg("depart")} style={{
+                        ...primaryBtn, background: "linear-gradient(135deg, #ef4444, #dc2626)", marginTop: 10,
+                      }}>
+                        ↑ LOG DEPARTURE — {getNow()}
+                      </button>
+                    </div>
+
+                    <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 10, padding: 14 }}>
+                      <div style={{ fontSize: 11, color: "#22c55e", letterSpacing: 1.5, marginBottom: 8 }}>ARRIVING AT</div>
+                      <input
+                        value={legForm.arrivalPoint}
+                        onChange={e => setLegForm(f => ({ ...f, arrivalPoint: e.target.value }))}
+                        placeholder="Current arrival location..."
+                        style={inputStyle}
+                      />
+                      <button onClick={() => handleAddLeg("arrive")} style={{
+                        ...primaryBtn, background: "linear-gradient(135deg, #22c55e, #16a34a)", marginTop: 10,
+                      }}>
+                        ↓ LOG ARRIVAL — {getNow()}
+                      </button>
+                    </div>
+
+                    <button onClick={handleComplete} style={{
+                      ...primaryBtn,
+                      background: "linear-gradient(135deg, rgba(245,158,11,0.15), rgba(245,158,11,0.05))",
+                      border: "1px solid rgba(245,158,11,0.4)", color: "#f59e0b",
+                      marginTop: 8,
+                    }}>
+                      ✅ MARK TASK COMPLETE
+                    </button>
+                  </div>
+                )}
+
+                {activeTask.status === "Completed" && (
+                  <div style={{
+                    textAlign: "center", padding: "24px",
+                    background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.3)",
+                    borderRadius: 12,
+                  }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+                    <div style={{ color: "#22c55e", fontWeight: 700, fontSize: 16, letterSpacing: 1 }}>TASK COMPLETED</div>
+                    <div style={{ color: "#4a5568", fontSize: 12, marginTop: 4 }}>Completion time: {activeTask.completionTime}</div>
+                    <div style={{ color: "#4a5568", fontSize: 12 }}>Final destination: {activeTask.finalDestination}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HISTORY */}
+        {screen === "history" && (
+          <div>
+            <SectionTitle>📋 TASK HISTORY</SectionTitle>
+            {tasks.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 0", color: "#4a5568" }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+                <div>No tasks recorded yet.</div>
+              </div>
+            ) : (
+              tasks.map(task => (
+                <div key={task.id} style={{
+                  background: "rgba(255,255,255,0.02)", border: "1px solid #1a2744",
+                  borderRadius: 10, padding: 14, marginBottom: 10,
+                  borderLeft: `3px solid ${task.status === "Completed" ? "#22c55e" : "#f59e0b"}`,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#e2e8f0" }}>{task.client}</div>
+                    <StatusBadge status={task.status} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "#4a5568", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <span>📅 {task.date}</span>
+                    <span>👤 {task.commanderName}</span>
+                    <span>🚗 {task.vehicleNumber}</span>
+                    <span>📍 {task.region}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#4a5568", marginTop: 4 }}>
+                    {task.legs.length} movement{task.legs.length !== 1 ? "s" : ""} logged
+                    {task.completionTime && ` · Completed ${task.completionTime}`}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return (
+    <div style={{
+      fontSize: 13, fontWeight: 700, letterSpacing: 2, color: "#f59e0b",
+      marginBottom: 16, paddingBottom: 8,
+      borderBottom: "1px solid rgba(245,158,11,0.2)",
+    }}>{children}</div>
+  );
+}
+
+function FieldGroup({ label, children }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: "#718096", letterSpacing: 2, marginBottom: 5 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function StatusBadge({ status }) {
+  const isComplete = status === "Completed";
+  return (
+    <div style={{
+      fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
+      padding: "3px 8px", borderRadius: 4,
+      background: isComplete ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)",
+      color: isComplete ? "#22c55e" : "#f59e0b",
+      border: `1px solid ${isComplete ? "rgba(34,197,94,0.3)" : "rgba(245,158,11,0.3)"}`,
+    }}>{status?.toUpperCase()}</div>
+  );
+}
+
+const inputStyle = {
+  width: "100%", padding: "11px 14px",
+  background: "rgba(255,255,255,0.04)", border: "1px solid #1e2d47",
+  borderRadius: 8, color: "#e2e8f0", fontSize: 14,
+  fontFamily: "'Rajdhani', sans-serif", fontWeight: 500,
+};
+
+const primaryBtn = {
+  width: "100%", padding: "13px",
+  background: "linear-gradient(135deg, #f59e0b, #d97706)",
+  border: "none", borderRadius: 8,
+  color: "#0a0f1e", fontSize: 13, fontWeight: 700, letterSpacing: 2,
+  cursor: "pointer", fontFamily: "'Rajdhani', sans-serif",
+};
